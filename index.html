@@ -801,19 +801,52 @@ const WEBHOOK_KEY = 'aria-clinic-2026';
 
 let patientPhone   = '';
 let sessionId      = '';
-let isListening    = false;
-let isProcessing   = false;
-let recognition    = null;
+let isListening       = false;
+let isProcessing      = false;
+let recognition       = null;
+let pendingTranscript = '';
 let currentAudio   = null;
 let audioCtx       = null;
 
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 
-// Pre-warm browser voices (they load async on first call)
-let _voices = [];
+// Pre-warm browser voices (async on first call)
 if (window.speechSynthesis) {
-  _voices = speechSynthesis.getVoices();
-  speechSynthesis.addEventListener('voiceschanged', () => { _voices = speechSynthesis.getVoices(); });
+  speechSynthesis.getVoices();
+  speechSynthesis.addEventListener('voiceschanged', () => speechSynthesis.getVoices());
+}
+
+// Chrome blocks speechSynthesis unless unlocked by a real user gesture first
+let _ttsUnlocked = false;
+function unlockTts() {
+  if (_ttsUnlocked || !window.speechSynthesis) return;
+  _ttsUnlocked = true;
+  const s = new SpeechSynthesisUtterance(' ');
+  s.volume = 0;
+  speechSynthesis.speak(s);
+}
+
+// Priority-ordered list of female English voices (covers Windows, Mac, Android, iOS)
+function pickFemaleVoice() {
+  const voices = speechSynthesis.getVoices();
+  const names = [
+    'Microsoft Aria Online (Natural) - English (Australia)',
+    'Microsoft Aria - English (Australia)',
+    'Karen',                                        // macOS AU female
+    'Catherine',                                    // macOS AU female alt
+    'Microsoft Zira - English (United States)',
+    'Microsoft Hazel - English (United Kingdom)',
+    'Google UK English Female',
+    'Samantha',                                     // iOS/macOS female
+  ];
+  for (const n of names) {
+    const v = voices.find(v => v.name === n);
+    if (v) return v;
+  }
+  // Fallback: first en-AU, then any English
+  return voices.find(v => v.lang === 'en-AU')
+      || voices.find(v => v.lang.startsWith('en'))
+      || null;
 }
 
 // DOM refs (populated after startChat)
@@ -831,6 +864,7 @@ function startChat() {
   }
   patientPhone = val;
   sessionId    = 'sess_' + Date.now() + Math.random().toString(36).slice(2);
+  unlockTts(); // must happen inside a user gesture click handler
 
   document.getElementById('splash').style.display = 'none';
   const app = document.getElementById('app');
@@ -876,28 +910,46 @@ function startMic() {
     addSysMsg('Voice input requires Chrome or Edge. Please type your message.');
     return;
   }
+  pendingTranscript = '';
   recognition = new SpeechRecognition();
   recognition.lang = 'en-AU';
   recognition.continuous = false;
   recognition.interimResults = false;
 
   recognition.onstart  = () => { isListening = true; setUI('listening'); };
+
+  // Store result here — on Windows Chrome onend can fire before onresult
   recognition.onresult = (e) => {
-    const transcript = e.results[0][0].transcript.trim();
-    stopMic();
-    if (transcript) sendToAria(transcript);
+    pendingTranscript = e.results[0][0].transcript.trim();
   };
-  recognition.onerror  = (e) => {
-    stopMic();
+
+  recognition.onerror = (e) => {
+    pendingTranscript = '';
+    isListening = false;
+    recognition = null;
     if (e.error === 'not-allowed') addSysMsg('Microphone access denied. Please allow it in your browser settings.');
-    else if (e.error !== 'no-speech' && e.error !== 'aborted') addSysMsg('Voice error. Please try again or type.');
+    else if (e.error !== 'no-speech' && e.error !== 'aborted') addSysMsg('Voice error. Please try again or type your message.');
+    if (!isProcessing) setUI('idle');
   };
-  recognition.onend = () => { isListening = false; if (!isProcessing) setUI('idle'); };
+
+  // onend always fires last — safe place to act on the transcript
+  recognition.onend = () => {
+    isListening = false;
+    recognition = null;
+    const text = pendingTranscript;
+    pendingTranscript = '';
+    if (text) {
+      sendToAria(text);
+    } else if (!isProcessing) {
+      setUI('idle');
+    }
+  };
+
   recognition.start();
 }
 
 function stopMic() {
-  if (recognition) { recognition.stop(); recognition = null; }
+  if (recognition) { recognition.stop(); } // onend will null it and handle transcript
   isListening = false;
 }
 
@@ -957,6 +1009,7 @@ async function playAudio(base64) {
 
 function speakBrowser(text) {
   if (!window.speechSynthesis) return;
+  unlockTts(); // ensure unlocked (no-op if already done)
   window.speechSynthesis.cancel();
   const clean = text.replace(/\*\*(.*?)\*\*/g,'$1').replace(/\*(.*?)\*/g,'$1');
   const utt = new SpeechSynthesisUtterance(clean);
@@ -966,16 +1019,14 @@ function speakBrowser(text) {
   utt.onerror = () => setSpeaking(false);
 
   const doSpeak = () => {
-    const voices = speechSynthesis.getVoices();
-    const au = voices.find(v => v.lang === 'en-AU' || v.name.includes('Australian') || v.name.includes('Karen'));
-    if (au) utt.voice = au;
+    const v = pickFemaleVoice();
+    if (v) utt.voice = v;
     speechSynthesis.speak(utt);
   };
 
   if (speechSynthesis.getVoices().length > 0) {
     doSpeak();
   } else {
-    // Voices not ready yet — wait for the event, then speak
     speechSynthesis.addEventListener('voiceschanged', doSpeak, { once: true });
   }
 }
