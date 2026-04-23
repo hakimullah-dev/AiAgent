@@ -660,7 +660,7 @@
   <!-- Recording bar — shown while mic is active -->
   <div class="recording-bar" id="recordingBar">
     <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="6"/></svg>
-    <span>Listening — auto-sends when you stop speaking</span>
+    <span>Listening — speak now, auto-sends when you stop</span>
     <div class="vad-bar"><div class="vad-bar-fill" id="vadFill"></div></div>
     <span class="recording-timer" id="recTimer">0:00</span>
   </div>
@@ -698,15 +698,12 @@ let patientPhone = '';
 let sessionId = '';
 let isWaiting = false;
 let isRecording = false;
-let mediaRecorder = null;
-let audioChunks = [];
+let recognition = null;
 let recInterval = null;
 let recSeconds = 0;
 let currentAudio = null;
 
-// VAD state
-let audioCtx = null;
-let vadActive = false;
+const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 
 // ─── STARTUP ──────────────────────────────────────────────────────────────────
 function startChat() {
@@ -792,113 +789,68 @@ function toggleRecording() {
   }
 }
 
-async function startRecording() {
-  try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    audioChunks = [];
+function startRecording() {
+  if (!SpeechRecognition) {
+    showSysMsg('Voice input is not supported in this browser. Please type your message.');
+    return;
+  }
 
-    // ── Web Audio VAD setup ──────────────────────────────────────────────────
-    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    const source = audioCtx.createMediaStreamSource(stream);
-    const analyser = audioCtx.createAnalyser();
-    analyser.fftSize = 512;
-    source.connect(analyser);
+  recognition = new SpeechRecognition();
+  recognition.continuous = false;
+  recognition.interimResults = true;
+  recognition.lang = 'en-AU';
 
-    const bufLen = analyser.frequencyBinCount;
-    const dataArr = new Uint8Array(bufLen);
-    let silenceStart = null;
-    let speechMs = 0;      // cumulative ms of detected speech
-    let lastSpeechTime = 0;
-    vadActive = true;
-
-    function vadTick() {
-      if (!vadActive) return;
-      analyser.getByteFrequencyData(dataArr);
-      // Average volume across all frequency bins (0–255)
-      const avg = dataArr.reduce((a, b) => a + b, 0) / bufLen;
-
-      // Update the visual level bar
-      document.getElementById('vadFill').style.width = Math.min(avg * 3, 100) + '%';
-
-      if (avg > 18) {
-        // User is speaking
-        speechMs += 16;
-        silenceStart = null;
-        lastSpeechTime = Date.now();
-      } else {
-        // Silence — only auto-stop if user has already spoken for at least 600ms
-        if (speechMs > 600) {
-          if (!silenceStart) silenceStart = Date.now();
-          if (Date.now() - silenceStart > 1500) {
-            // 1.5s of silence after speech → auto-submit
-            stopRecording();
-            return;
-          }
-        }
-      }
-      requestAnimationFrame(vadTick);
-    }
-    requestAnimationFrame(vadTick);
-    // ────────────────────────────────────────────────────────────────────────
-
-    // ── MediaRecorder setup ──────────────────────────────────────────────────
-    const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-      ? 'audio/webm;codecs=opus'
-      : 'audio/webm';
-    mediaRecorder = new MediaRecorder(stream, { mimeType });
-    mediaRecorder.ondataavailable = e => { if (e.data.size > 0) audioChunks.push(e.data); };
-    mediaRecorder.onstop = handleRecordingStop;
-    mediaRecorder.start();
-
+  recognition.onstart = () => {
     isRecording = true;
     recSeconds = 0;
     document.getElementById('micBtn').classList.add('recording');
     document.getElementById('recordingBar').style.display = 'flex';
+    document.getElementById('recTimer').textContent = '0:00';
     recInterval = setInterval(() => {
       recSeconds++;
       const m = Math.floor(recSeconds / 60);
       const s = recSeconds % 60;
       document.getElementById('recTimer').textContent = m + ':' + String(s).padStart(2, '0');
+      document.getElementById('vadFill').style.width = Math.min(recSeconds * 8, 90) + '%';
     }, 1000);
+  };
 
-  } catch (e) {
-    showSysMsg('Microphone access is needed for voice messages.');
-  }
+  recognition.onresult = (event) => {
+    const transcript = Array.from(event.results)
+      .map(r => r[0].transcript).join('').trim();
+    if (event.results[event.results.length - 1].isFinal && transcript) {
+      stopRecordingUI();
+      removeQuickReplies();
+      addUserMessage('🎤 ' + transcript);
+      sendToWebhook({ session_id: sessionId, user_input: transcript, patient_phone: patientPhone });
+    }
+  };
+
+  recognition.onerror = (event) => {
+    stopRecordingUI();
+    if (event.error === 'not-allowed') {
+      showSysMsg('Microphone access was denied. Please allow it in your browser settings.');
+    } else if (event.error !== 'no-speech' && event.error !== 'aborted') {
+      showSysMsg('Voice recognition error. Please try again or type your message.');
+    }
+  };
+
+  recognition.onend = () => { stopRecordingUI(); };
+
+  recognition.start();
 }
 
 function stopRecording() {
-  if (!isRecording) return;
-  vadActive = false;
-  if (audioCtx) { audioCtx.close().catch(() => {}); audioCtx = null; }
-  document.getElementById('vadFill').style.width = '0%';
-  mediaRecorder.stop();
-  mediaRecorder.stream.getTracks().forEach(t => t.stop());
+  if (recognition) { recognition.abort(); recognition = null; }
+  stopRecordingUI();
+}
+
+function stopRecordingUI() {
   clearInterval(recInterval);
   isRecording = false;
   document.getElementById('micBtn').classList.remove('recording');
   document.getElementById('recordingBar').style.display = 'none';
-}
-
-function handleRecordingStop() {
-  const dur = recSeconds;
-  const mimeType = audioChunks[0] ? audioChunks[0].type || 'audio/webm' : 'audio/webm';
-  const blob = new Blob(audioChunks, { type: mimeType });
-  const reader = new FileReader();
-  reader.onloadend = () => {
-    const b64 = reader.result.split(',')[1];
-    const m = Math.floor(dur / 60);
-    const s = dur % 60;
-    removeQuickReplies();
-    // Add placeholder bubble — will be replaced with transcription when response arrives
-    addUserMessage('🎤 ' + m + ':' + String(s).padStart(2, '0'), 'voicePlaceholder');
-    sendToWebhook({
-      session_id: sessionId,
-      audio_base64: b64,
-      audio_mime_type: mimeType,
-      patient_phone: patientPhone
-    });
-  };
-  reader.readAsDataURL(blob);
+  document.getElementById('vadFill').style.width = '0%';
 }
 
 // ─── WEBHOOK ──────────────────────────────────────────────────────────────────
@@ -938,23 +890,10 @@ async function sendToWebhook(body) {
 }
 
 function handleResponse(data) {
-  const text   = data.speechText || data.text || '';
-  const audio  = data.audio_base64 || '';
-  const type   = data.type || 'message';
+  const text  = data.speechText || data.text || '';
+  const audio = data.audio_base64 || data.audio || '';
+  const type  = data.type || 'message';
 
-  // ── Replace voice placeholder bubble with the STT transcription ──────────
-  if (data.user_transcription && data.user_transcription.trim()) {
-    const placeholder = document.getElementById('voicePlaceholder');
-    if (placeholder) {
-      // Add a small mic label above the transcription text
-      placeholder.innerHTML =
-        '<span class="voice-label">🎤 Voice message</span>' +
-        escapeHtml(data.user_transcription.trim());
-      placeholder.id = '';
-    }
-  }
-
-  // ── Render Aria's reply ───────────────────────────────────────────────────
   let quickReplies = null;
 
   if (type === 'slot_picker' && data.slots && data.slots.length > 0) {
