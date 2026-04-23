@@ -809,6 +809,13 @@ let audioCtx       = null;
 
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 
+// Pre-warm browser voices (they load async on first call)
+let _voices = [];
+if (window.speechSynthesis) {
+  _voices = speechSynthesis.getVoices();
+  speechSynthesis.addEventListener('voiceschanged', () => { _voices = speechSynthesis.getVoices(); });
+}
+
 // DOM refs (populated after startChat)
 let chatWindow, textInput, typing, statusDot, statusText, avatar, avatarRing, micBtn, micLabel, sendBtn;
 
@@ -951,15 +958,26 @@ async function playAudio(base64) {
 function speakBrowser(text) {
   if (!window.speechSynthesis) return;
   window.speechSynthesis.cancel();
-  const utt = new SpeechSynthesisUtterance(text.replace(/\*\*(.*?)\*\*/g,'$1').replace(/\*(.*?)\*/g,'$1'));
+  const clean = text.replace(/\*\*(.*?)\*\*/g,'$1').replace(/\*(.*?)\*/g,'$1');
+  const utt = new SpeechSynthesisUtterance(clean);
   utt.lang = 'en-AU'; utt.rate = 0.92; utt.pitch = 1.05;
-  const voices = speechSynthesis.getVoices();
-  const au = voices.find(v => v.lang === 'en-AU' || v.name.includes('Australian') || v.name.includes('Karen'));
-  if (au) utt.voice = au;
   setSpeaking(true);
   utt.onend   = () => setSpeaking(false);
   utt.onerror = () => setSpeaking(false);
-  speechSynthesis.speak(utt);
+
+  const doSpeak = () => {
+    const voices = speechSynthesis.getVoices();
+    const au = voices.find(v => v.lang === 'en-AU' || v.name.includes('Australian') || v.name.includes('Karen'));
+    if (au) utt.voice = au;
+    speechSynthesis.speak(utt);
+  };
+
+  if (speechSynthesis.getVoices().length > 0) {
+    doSpeak();
+  } else {
+    // Voices not ready yet — wait for the event, then speak
+    speechSynthesis.addEventListener('voiceschanged', doSpeak, { once: true });
+  }
 }
 
 // ── UI STATE ─────────────────────────────────────────────────────────────────
