@@ -430,50 +430,6 @@
       border-bottom-right-radius: 4px;
     }
 
-    /* Audio player */
-    .audio-player {
-      margin-top: 10px;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      background: rgba(0,212,170,0.07);
-      border: 1px solid rgba(0,212,170,0.15);
-      border-radius: 8px;
-      padding: 7px 10px;
-    }
-
-    .audio-play-btn {
-      width: 26px; height: 26px;
-      background: var(--teal);
-      border: none;
-      border-radius: 50%;
-      cursor: pointer;
-      display: flex; align-items: center; justify-content: center;
-      color: var(--bg);
-      flex-shrink: 0;
-      transition: transform 0.1s;
-    }
-
-    .audio-play-btn:hover { transform: scale(1.1); }
-
-    .audio-progress {
-      flex: 1;
-      height: 3px;
-      background: var(--border);
-      border-radius: 2px;
-      overflow: hidden;
-      cursor: pointer;
-    }
-
-    .audio-progress-fill {
-      height: 100%;
-      background: var(--teal);
-      width: 0%;
-      transition: width 0.1s linear;
-    }
-
-    .audio-time { font-size: 11px; color: var(--muted); white-space: nowrap; }
-
     /* TYPING */
     .typing {
       display: none;
@@ -1096,10 +1052,6 @@ function addMsg(role, text, audioB64, slotPicker, quickReplies) {
       .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
       .replace(/\n/g, '<br>');
 
-    if (audioB64) {
-      bubble.appendChild(buildAudioPlayer(audioB64));
-    }
-
     if (slotPicker && slotPicker.slots && slotPicker.slots.length > 0) {
       bubble.appendChild(buildSlotPicker(slotPicker));
     }
@@ -1164,57 +1116,6 @@ function buildSlotPicker(slotPicker) {
     grid.appendChild(btn);
   });
   return picker;
-}
-
-function buildAudioPlayer(b64) {
-  const wrap = document.createElement('div');
-  wrap.className = 'audio-player';
-
-  const playBtn = document.createElement('button');
-  playBtn.className = 'audio-play-btn';
-  playBtn.innerHTML = `<svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>`;
-
-  const progress = document.createElement('div');
-  progress.className = 'audio-progress';
-  const fill = document.createElement('div');
-  fill.className = 'audio-progress-fill';
-  progress.appendChild(fill);
-
-  const timeEl = document.createElement('div');
-  timeEl.className = 'audio-time';
-  timeEl.textContent = '0:00';
-
-  const audio = new Audio('data:audio/mpeg;base64,' + b64);
-  audio.ontimeupdate = () => {
-    if (audio.duration) {
-      fill.style.width = (audio.currentTime / audio.duration * 100) + '%';
-      const s = Math.floor(audio.currentTime);
-      timeEl.textContent = Math.floor(s/60) + ':' + String(s%60).padStart(2,'0');
-    }
-  };
-  audio.onended = () => {
-    playBtn.innerHTML = `<svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>`;
-    fill.style.width = '0%';
-  };
-  playBtn.onclick = () => {
-    if (audio.paused) {
-      if (currentAudio && currentAudio !== audio) currentAudio.pause();
-      audio.play(); currentAudio = audio;
-      playBtn.innerHTML = `<svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>`;
-    } else {
-      audio.pause();
-      playBtn.innerHTML = `<svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>`;
-    }
-  };
-  progress.onclick = (e) => {
-    const rect = progress.getBoundingClientRect();
-    if (audio.duration) audio.currentTime = ((e.clientX - rect.left) / rect.width) * audio.duration;
-  };
-
-  wrap.appendChild(playBtn);
-  wrap.appendChild(progress);
-  wrap.appendChild(timeEl);
-  return wrap;
 }
 
 function addSysMsg(text) {
