@@ -936,7 +936,8 @@ async function sendToAria(userText) {
     addMsg('aria', reply, audioB64, slotPicker);
 
     if (audioB64) {
-      await playAudio(audioB64);
+      const played = await playAudio(audioB64);
+      if (!played) speakBrowser(reply);
     } else {
       speakBrowser(reply);
     }
@@ -960,31 +961,37 @@ async function playAudio(base64) {
     audio.onended = () => { setSpeaking(false); currentAudio = null; };
     audio.onerror = () => { setSpeaking(false); };
     await audio.play();
-  } catch(e) { setSpeaking(false); }
+    return true;
+  } catch(e) { setSpeaking(false); return false; }
 }
 
 function speakBrowser(text) {
   if (!window.speechSynthesis) return;
-  unlockTts(); // ensure unlocked (no-op if already done)
   window.speechSynthesis.cancel();
-  const clean = text.replace(/\*\*(.*?)\*\*/g,'$1').replace(/\*(.*?)\*/g,'$1');
-  const utt = new SpeechSynthesisUtterance(clean);
-  utt.lang = 'en-AU'; utt.rate = 0.92; utt.pitch = 1.05;
-  setSpeaking(true);
-  utt.onend   = () => setSpeaking(false);
-  utt.onerror = () => setSpeaking(false);
 
-  const doSpeak = () => {
-    const v = pickFemaleVoice();
-    if (v) utt.voice = v;
-    speechSynthesis.speak(utt);
-  };
+  // Chrome bug: speak() silently fails immediately after cancel() in async context.
+  // A short delay lets the engine reset before queuing the new utterance.
+  setTimeout(() => {
+    const clean = text.replace(/\*\*(.*?)\*\*/g,'$1').replace(/\*(.*?)\*/g,'$1');
+    const utt = new SpeechSynthesisUtterance(clean);
+    utt.lang = 'en-AU'; utt.rate = 0.92; utt.pitch = 1.05;
+    setSpeaking(true);
+    utt.onend   = () => setSpeaking(false);
+    utt.onerror = () => setSpeaking(false);
 
-  if (speechSynthesis.getVoices().length > 0) {
-    doSpeak();
-  } else {
-    speechSynthesis.addEventListener('voiceschanged', doSpeak, { once: true });
-  }
+    const doSpeak = () => {
+      const v = pickFemaleVoice();
+      if (v) utt.voice = v;
+      if (speechSynthesis.paused) speechSynthesis.resume();
+      speechSynthesis.speak(utt);
+    };
+
+    if (speechSynthesis.getVoices().length > 0) {
+      doSpeak();
+    } else {
+      speechSynthesis.addEventListener('voiceschanged', doSpeak, { once: true });
+    }
+  }, 150);
 }
 
 // ── UI STATE ─────────────────────────────────────────────────────────────────
