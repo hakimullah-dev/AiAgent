@@ -505,8 +505,30 @@
 
     .slot-btn:hover { background: var(--teal); color: var(--bg); border-color: var(--teal); transform: scale(1.04); }
     .slot-btn:active { transform: scale(0.97); }
-    .slot-btn:disabled { opacity: 0.35; cursor: not-allowed; transform: none; }
+    .slot-btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
     .slot-btn.selected { background: var(--teal); color: var(--bg); border-color: var(--teal); opacity: 1 !important; }
+    .slot-btn.booked {
+      filter: blur(2.5px);
+      opacity: 0.35;
+      cursor: not-allowed;
+      pointer-events: none;
+      border-color: rgba(255,255,255,0.08);
+      color: var(--muted);
+      background: rgba(255,255,255,0.03);
+      transform: none !important;
+    }
+    .slot-legend {
+      display: flex;
+      gap: 14px;
+      font-size: 11px;
+      margin-bottom: 10px;
+      align-items: center;
+    }
+    .legend-avail { color: var(--teal); display: flex; align-items: center; gap: 4px; }
+    .legend-booked { color: var(--muted); display: flex; align-items: center; gap: 4px; }
+    .legend-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+    .legend-dot.avail { background: var(--teal); }
+    .legend-dot.booked { background: var(--muted); filter: blur(1px); }
 
     /* Quick replies */
     .quick-replies {
@@ -931,7 +953,7 @@ async function sendToAria(userText) {
 
     const reply     = data.speechText || data.text || "Sorry, I didn't catch that. Please try again.";
     const audioB64  = data.audio_base64 || data.audio || '';
-    const slotPicker = data.slot_picker || null;
+    const slotPicker = (data.type === 'slot_picker' && data.slots && data.slots.length) ? data : null;
 
     addMsg('aria', reply, audioB64, slotPicker);
 
@@ -1092,34 +1114,46 @@ function addQuickReplies(replies) {
   chatWindow.scrollTop = chatWindow.scrollHeight;
 }
 
-function buildSlotPicker(slotPicker) {
+function buildSlotPicker(slotData) {
   const picker = document.createElement('div');
   picker.className = 'slot-picker';
-  const isReschedule = slotPicker.is_reschedule === true;
+  const isReschedule = slotData.is_reschedule === true;
+  const docName = slotData.doctor_name || 'Doctor';
+  const dateLabel = slotData.date
+    ? new Date(slotData.date + 'T00:00:00').toLocaleDateString('en-AU', { weekday: 'long', day: 'numeric', month: 'long' })
+    : '';
+
   picker.innerHTML = `
     <div class="slot-picker-label">
       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
       ${isReschedule ? 'Reschedule — Select New Time' : 'Select Appointment Time'}
     </div>
-    <div class="slot-picker-doctor">${slotPicker.doctor_name || 'Doctor'}</div>
-    <div class="slot-picker-date">${slotPicker.friendly_date || slotPicker.date || ''}</div>
+    <div class="slot-picker-doctor">${docName}</div>
+    <div class="slot-picker-date">${dateLabel}</div>
+    <div class="slot-legend">
+      <span class="legend-avail"><span class="legend-dot avail"></span>Available</span>
+      <span class="legend-booked"><span class="legend-dot booked"></span>Booked — not selectable</span>
+    </div>
     <div class="slot-grid"></div>
   `;
+
   const grid = picker.querySelector('.slot-grid');
-  slotPicker.slots.forEach(slot => {
-    const timeStr = typeof slot === 'string' ? slot : (slot.time || '');
-    if (!timeStr) return;
-    const [hh, mm] = timeStr.split(':');
-    const h = parseInt(hh);
-    const label = `${h % 12 || 12}:${mm} ${h >= 12 ? 'PM' : 'AM'}`;
+  slotData.slots.forEach(slot => {
+    const label = slot.label || slot.time || '';
+    if (!label) return;
+    const isBooked = slot.status === 'booked';
     const btn = document.createElement('button');
-    btn.className = 'slot-btn';
+    btn.className = 'slot-btn' + (isBooked ? ' booked' : '');
     btn.textContent = label;
-    btn.onclick = () => {
-      grid.querySelectorAll('.slot-btn').forEach(b => { b.disabled = true; b.classList.remove('selected'); });
-      btn.classList.add('selected');
-      sendToAria(isReschedule ? `Please reschedule my appointment to ${label}` : `I'd like the ${label} slot`);
-    };
+    btn.disabled = isBooked;
+    if (!isBooked) {
+      btn.onclick = () => {
+        grid.querySelectorAll('.slot-btn:not(.booked)').forEach(b => { b.disabled = true; b.classList.remove('selected'); });
+        btn.classList.add('selected');
+        btn.disabled = false;
+        sendToAria(isReschedule ? `Please reschedule my appointment to ${label}` : `I'd like the ${label} slot`);
+      };
+    }
     grid.appendChild(btn);
   });
   return picker;
